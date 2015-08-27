@@ -57,7 +57,7 @@ module ApplicationHelper
 		outPut = Array.new
 		outPut.push("Starting Test")
 		# local connection info
-		host = "lxvm-ciiqa3.lenexa.ibm.com"
+		host = "bluemix.ibm.com"
 		port = "10214"
 		
 =begin 
