@@ -36,6 +36,13 @@ module ApplicationHelper
 # 8.4 DBStats 
 # 9 Drop a collection
 
+	# To run locally, set URL here.
+	# For example, URL = "mongodb://localhost:27017/test"	
+	URL = ""
+	
+	# When deploying to Bluemix, determines whether to use SSL
+	USE_SSL = false
+	
 	class City
 		attr_accessor :name, :population, :longitude, :latitude, :countryCode
 
@@ -54,27 +61,31 @@ module ApplicationHelper
 
 	def runHelloGalaxy()
 		# create array to store info for output
-		outPut = Array.new
-		outPut.push("Starting Test")
-		# local connection info
-		host = "bluemix.ibm.com"
-		port = "10214"
-		
-=begin 
-		parsing of vcap services for bluemix example
-		if ENV['VCAP_SERVICES'] == nil
-			outPut.push("vcap services is nil")
-			return outPut
+		output = Array.new
+		output.push("Starting test...")
+
+		if (URL == nil || URL == "") 
+			logger.info("parsing VCAP_SERVICES")
+			if ENV['VCAP_SERVICES'] == nil
+				output.push("vcap services is nil")
+				return output
+			end
+                        serviceName = "timeseriesdatabase"
+			if ENV['SERVICE_NAME'] != nil
+				serviceName = ENV['SERVICE_NAME']
+			end
+			logger.info("Using service name " + serviceName)
+			vcap_hash = JSON.parse(ENV['VCAP_SERVICES'])[serviceName]
+			credHash = vcap_hash.first["credentials"]
+			if (USE_SSL)
+				mongodb_url = credHash["mongodb_url_ssl"]
+			else
+				mongodb_url = credHash["mongodb_url"]
+			end
+			logger.info("Using mongodb_url " + mongodb_url)
+		else
+			mongodb_url = URL
 		end
-		vcap_hash = JSON.parse(ENV['VCAP_SERVICES'])["altadb-dev"]
-		credHash = vcap_hash.first["credentials"]
-		host = credHash["host"]
-		port = credHash["json_port"]
-		jsonUrl = credHash["json_url"]
-		dbname= credHash['db']
-		user = credHash["username"]
-		password = credHash["password"]
-=end
 		
 		kansasCity = City.new("Kansas City", 467007, 39.0997, 94.5783, 1)
 		seattle = City.new("Seattle", 652405, 47.6097, 122.3331, 1);
@@ -85,224 +96,223 @@ module ApplicationHelper
 		melbourne = City.new("Melbourne", 4087000, -37.8136, -144.9631, 61);
 		sydney = City.new("Sydney", 4293000, -33.8650, -151.2094, 61)
 
-		mongo_client = Mongo::Client.new(["#{host}:#{port}"])
-		db = mongo_client.database
-		collectionName = "rubyMongoGalaxy"
-		joinCollectionName = "rubyJoin"
-		cityTableName = "citytable"
-		codeTableName = "codetable"
+		begin
+			output.push("Connecting to " + mongodb_url)
+			mongo_client = Mongo::Client.new(mongodb_url)
+			db = mongo_client.database
+			collectionName = "rubyMongoGalaxy"
+			joinCollectionName = "rubyJoin"
+			cityTableName = "citytable"
+			codeTableName = "codetable"
+	
+			output.push("Creating collection #{collectionName}")	
+			mongo_client[collectionName].drop # make sure it does not already exist
+			collection = mongo_client[collectionName]
+			collection.create
+	
+			output.push("")
+			output.push("Create tables: #{codeTableName}, #{cityTableName}")
+			# drop tables before
+			db["codeTable"].drop
+			db["cityTable"].drop
+	
+			db.command({"create" => "codetable", :columns => [{:name => "countryCode", :type => "int"},
+							{:name => "countryName", :type => "varchar(50)"}]})
+			db.command({"create" => "citytable", :columns => [{:name => "name", :type => "varchar(50)"},
+							{:name => "population", :type => "int"}, {:name => "longitude", :type => "decimal(8,4)"},
+							{:name => "latitude", :type => "decimal(8,4)"}, {:name => "countryCode", :type => "int"}]})
+			
+			output.push(" ")
+			output.push("Insert a single document to a collection")
+			collection.insert_one(kansasCity.toHash)
+			output.push("Inserted #{kansasCity.toHash}" )
+	
+			output.push(" ")
+			output.push("Inserting multiple entries into collection")
+			multiPost = [seattle.toHash(), newYork.toHash(), london.toHash(), tokyo.toHash(), madrid.toHash()] 
+			collection.insert_many(multiPost)
+			output.push("Inserted")
+			output.push("#{seattle.toHash}")
+			output.push("#{newYork.toHash}")
+			output.push("#{london.toHash}")
+			output.push("#{tokyo.toHash}")
+			output.push("#{madrid.toHash}") 
+	
+			output.push(" ")
+			output.push("Find one that matches a query condition")
+			output.push("#{kansasCity.name}")
+			output.push("#{collection.find({:name => kansasCity.name}).to_a}")
+	
+			output.push(" ")
+			output.push("Find all that match a query condition: longitude > 40")
+			collection.find("longitude" => {"$gt" => 40}).each do |row|
+				output.push("#{row.to_a}")
+			end
+	
+			output.push(" ")
+			output.push("Find all documents in collection")
+			collection.find.each do |row|
+				output.push(row)
+			end
+	
+			output.push("")
+			output.push("Count documents in collection")
+			num = collection.find({:population => {"$lt" => 8000000}}).count()
+			output.push("There are #{num} documents with a population less than 8 million")
+	
+			output.push("")
+			output.push("Order documents in collection by population (high to low)")
+			result = collection.find.sort(:population => -1).projection(:name =>1, :population => 1, :_id => 0).each do |row|
+				output.push(row)
+			end
+	
+			output.push("")
+			output.push("Find distinct codes in collection")
+			collection.find.distinct(:countryCode).each do |row|
+				output.push(row)	
+			end
+	
+			output.push("")
+			output.push("Joins")
+			
+			# refer to documentation for system.join operability
+			# http://www-01.ibm.com/support/knowledgecenter/SSGU8G_12.1.0/com.ibm.json.doc/ids_json_069.htm?lang=en
+			sys = db["system.join"]
+			
+			mongo_client[joinCollectionName].drop # make sure it does not already exist
+			joinCollection = mongo_client[joinCollectionName]
+			joinCollection.create
+			joinCollection.insert_one({:countryCode => 1, :countryName => "United States of America"})
+			joinCollection.insert_one({:countryCode => 44, :countryName => "United Kingdom"})
+			joinCollection.insert_one({:countryCode => 81, :countryName => "Japan"})
+			joinCollection.insert_one({:countryCode => 34, :countryName => "Spain"})
+			joinCollection.insert_one({:countryCode => 61, :countryName => "Australia"})
+	
+			codeTable = db[codeTableName]
+			codeTable.insert_one({:countryCode => 1, :countryName => "United States of America"})
+			codeTable.insert_one({:countryCode => 44, :countryName => "United Kingdom"})
+			codeTable.insert_one({:countryCode => 81, :countryName => "Japan"})
+			codeTable.insert_one({:countryCode => 34, :countryName => "Spain"})
+			codeTable.insert_one({:countryCode => 61, :countryName => "Australia"})
+	
+			
+			cityTable = db[cityTableName]
+			cityTable.insert_one(kansasCity.toHash)
+			cityTable.insert_many(multiPost)
+	
+			output.push("Join collection-collection")
+		    	joinCollectionCollection = {"$collections" => {"rubyMongoGalaxy" => {"$project" => {:name => 1 ,:population => 1 ,:longitude => 1 ,:latitude => 1}} , 
+				"rubyJoin" => { "$project" => {:countryCode => 1 ,:countryName =>1}}} , 
+				"$condition" => {"rubyMongoGalaxy.countryCode" => "rubyJoin.countryCode"}}
 
-		outPut.push("Creating collection #{collectionName}")	
-		mongo_client[collectionName].drop # make sure it does not already exist
-		collection = mongo_client[collectionName]
-		collection.create
-
-		outPut.push("")
-		outPut.push("Create tables: #{codeTableName}, #{cityTableName}")
-		# drop tables before
-		db["codeTable"].drop
-		db["cityTable"].drop
-
-		db.command({"create" => "codetable", :columns => [{:name => "countryCode", :type => "int"},
-						{:name => "countryName", :type => "varchar(50)"}]})
-		db.command({"create" => "citytable", :columns => [{:name => "name", :type => "varchar(50)"},
-						{:name => "population", :type => "int"}, {:name => "longitude", :type => "decimal(8,4)"},
-						{:name => "latitude", :type => "decimal(8,4)"}, {:name => "countryCode", :type => "int"}]})
+			output.push("Find all documents in collection-to-collection join")
+			sys.find(joinCollectionCollection).each do |row|
+				output.push(row)
+			end
+	
+			output.push("")
+			output.push("Join table-collection")
+			joinTableCollection = {"$collections" => {"citytable" => {"$project" => {:name => 1, :population => 1, :longitude => 1, :latitude => 1}},
+									"rubyJoin" => {"$project" => {:countryCode => 1, :countryName => 1}}},
+									"$condition" => {"citytable.countryCode" => "rubyJoin.countryCode"}}
+			output.push("Find all documents table-to-collection join")
+			sys.find(joinTableCollection).each do |row|
+				output.push(row)
+			end
+	
+			output.push("Join table-table")
+			joinTableTable = {"$collections" => {"citytable" => {"$project" => {:name => 1, :population => 1, :longitude => 1, :latitude => 1}},
+								"codetable" => {"$project" => {:countryCode => 1, :countryName => 1}}},
+								"$condition" => {"citytable.countryCode" => "codetable.countryCode"}}
+			output.push("Find all documents in table-to-table join")
+			sys.find(joinTableTable).each do |row|
+				output.push(row)
+			end
+	
+			
+			output.push("Projection: Display results without longitude and latitude")
+			# projection is a method of Module: Mongo::Collection::View::Readable
+			collection.find({:countryCode => 1}).projection({:_id => 0, :longitude => 0, :latitude =>0}).each do |rst|
+				output.push(rst)
+			end
+	
+			output.push("")
+			output.push("Update Documents")
+			collection.find(:name => seattle.name).update_one("$set" => {:countryCode => 999})
+			output.push("Updated #{seattle.name} with countryCode 999")
+	
+			output.push("")
+			output.push("Delete Documents")
+			result = collection.find(:name => tokyo.name).delete_many
+			unless result != 1
+				output.push("Failed to delete only document with #{tokyo.name}")
+			end
+	
+			output.push("")
+			output.push("SQL passthrough")
+			# You must enable SQL operations by setting security.sql.passthrough=true in the wire listener properties file.
+			# remove table if already exist
+			sqlTable = mongo_client["town"].drop
+			# the table needs to be created through database, not mongo client for passthrough
+			sqlCollection = db["system.sql"]
+			output.push("Create table")
+			result = sqlCollection.find("$sql" => "create table town (name varchar(255), countryCode int)")
+			output.push("Insert into table")
+			result = sqlCollection.find("$sql" => "insert into town values ('Lawerence', 1)")
+			output.push("Drop table")
+			result = sqlCollection.find("$sql" => "drop table town")
+	
+			#Transactions
+			output.push("")
+			output.push("Transactions")
+			db.command(:transaction => "enable")
+			collection.insert_one(sydney.toHash)
+			db.command(:transaction => "commit")
+			collection.insert_one(tokyo.toHash)
+			collection.insert_one(melbourne.toHash)
+			db.command(:transaction => "rollback")
+			db.command(:transaction => "disable")
+	
+			output.push(" ")
+			output.push("List of all documents in collection")
+			result = collection.find.projection(:name =>1, :population => 1, :_id => 0).each do |row|
+				output.push(row)
+			end
+	
+			output.push("")
+			output.push("Commands")
+			count = db.command({"count" => "#{collectionName}"})
+			count.each do |stmt|
+				output.push("There are #{stmt['n']} documents in collection")
+			end
+			
+			rst = db.command({"distinct" => "#{collectionName}", "key" => "countryCode"})
+			rst.each do |stmt|
+				output.push("Distinct values: #{stmt['values']}")
+			end
+			# Database stats
+			rst = db.command({"dbstats" => 1})
+			#output.push[0]
+			rst.each do |stmt|
+				output.push(stmt)
+			end
+			# collection stats
+			rst = db.command({"collstats" => "#{collectionName}"})
+			rst.each do |stmt|
+				output.push(stmt)
+			end
+			output.push("")
+			output.push("Drop a collection")
+			collection.drop
 		
-		outPut.push(" ")
-		outPut.push("Insert a single document to a collection")
-		collection.insert_one(kansasCity.toHash)
-		outPut.push("Inserted #{kansasCity.toHash}" )
+		ensure
+			if (mongo_client != nil) 
+				mongo_client.close
+			end	
+		end		
 
-		outPut.push(" ")
-		outPut.push("Inserting multiple entries into collection")
-		multiPost = [seattle.toHash(), newYork.toHash(), london.toHash(), tokyo.toHash(), madrid.toHash()] 
-		collection.insert_many(multiPost)
-		outPut.push("Inserted")
-		outPut.push("#{seattle.toHash}")
-		outPut.push("#{newYork.toHash}")
-		outPut.push("#{london.toHash}")
-		outPut.push("#{tokyo.toHash}")
-		outPut.push("#{madrid.toHash}") 
+		return output
 
-		outPut.push(" ")
-		outPut.push("Find one that matches a query condition")
-		outPut.push("#{kansasCity.name}")
-		outPut.push("#{collection.find({:name => kansasCity.name}).to_a}")
-
-		outPut.push(" ")
-		outPut.push("Find all that match a query condition: longitude > 40")
-		collection.find("longitude" => {"$gt" => 40}).each do |row|
-			outPut.push("#{row.to_a}")
-		end
-
-		outPut.push(" ")
-		outPut.push("Find all documents in collection")
-		collection.find.each do |row|
-			outPut.push(row)
-		end
-
-		outPut.push("")
-		outPut.push("Count documents in collection")
-		num = collection.find({:population => {"$lt" => 8000000}}).count()
-		outPut.push("There are #{num} documents with a population less than 8 million")
-
-		outPut.push("")
-		outPut.push("Order documents in collection by population (high to low)")
-		result = collection.find.sort(:population => -1).projection(:name =>1, :population => 1, :_id => 0).each do |row|
-			outPut.push(row)
-		end
-
-		outPut.push("")
-		outPut.push("Find distinct codes in collection")
-		collection.find.distinct(:countryCode).each do |row|
-			outPut.push(row)	
-		end
-
-		outPut.push("")
-		outPut.push("Joins")
-		
-		# refer to documentation for system.join operability
-		# http://www-01.ibm.com/support/knowledgecenter/SSGU8G_12.1.0/com.ibm.json.doc/ids_json_069.htm?lang=en
-		sys = db["system.join"]
-		
-		mongo_client[joinCollectionName].drop # make sure it does not already exist
-		joinCollection = mongo_client[joinCollectionName]
-		joinCollection.create
-		joinCollection.insert_one({:countryCode => 1, :countryName => "United States of America"})
-		joinCollection.insert_one({:countryCode => 44, :countryName => "United Kingdom"})
-		joinCollection.insert_one({:countryCode => 81, :countryName => "Japan"})
-		joinCollection.insert_one({:countryCode => 34, :countryName => "Spain"})
-		joinCollection.insert_one({:countryCode => 61, :countryName => "Australia"})
-
-		codeTable = db[codeTableName]
-		codeTable.insert_one({:countryCode => 1, :countryName => "United States of America"})
-		codeTable.insert_one({:countryCode => 44, :countryName => "United Kingdom"})
-		codeTable.insert_one({:countryCode => 81, :countryName => "Japan"})
-		codeTable.insert_one({:countryCode => 34, :countryName => "Spain"})
-		codeTable.insert_one({:countryCode => 61, :countryName => "Australia"})
-
-		
-		cityTable = db[cityTableName]
-		cityTable.insert_one(kansasCity.toHash)
-		cityTable.insert_many(multiPost)
-
-		outPut.push("Join collection-collection")
-    	joinCollectionCollection = {"$collections" => {"rubyMongoGalaxy" => {"$project" => {:name => 1 ,:population => 1 ,:longitude => 1 ,:latitude => 1}} , 
-                                                   "rubyJoin" => { "$project" => {:countryCode => 1 ,:countryName =>1}}} , 
-                                "$condition" => {"rubyMongoGalaxy.countryCode" => "rubyJoin.countryCode"}}
-
-		outPut.push("Find all documents in join collection")
-		sys.find(joinCollectionCollection).each do |row|
-			outPut.push(row)
-		end
-
-		outPut.push("")
-		outPut.push("Join table-collection")
-		joinTableCollection = {"$collections" => {"citytable" => {"$project" => {:name => 1, :population => 1, :longitude => 1, :latitude => 1}},
-								"rubyJoin" => {"$project" => {:countryCode => 1, :countryName => 1}}},
-								"$condition" => {"citytable.countryCode" => "rubyJoin.countryCode"}}
-		outPut.push("Find all documents table-collection")
-		sys.find(joinTableCollection).each do |row|
-			outPut.push(row)
-		end
-
-		outPut.push("Join table-table")
-		joinTableTable = {"$collections" => {"citytable" => {"$project" => {:name => 1, :population => 1, :longitude => 1, :latitude => 1}},
-							"codetable" => {"$project" => {:countryCode => 1, :countryName => 1}}},
-							"$condition" => {"citytable.countryCode" => "codetable.countryCode"}}
-		outPut.push("Find all documents in table-table")
-		sys.find(joinTableTable).each do |row|
-			outPut.push(row)
-		end
-
-		
-		outPut.push("Projection: Display results without longitude and latitude")
-		# projection is a method of Module: Mongo::Collection::View::Readable
-		collection.find({:countryCode => 1}).projection({:_id => 0, :longitude => 0, :latitude =>0}).each do |rst|
-			outPut.push(rst)
-		end
-
-		outPut.push("")
-		outPut.push("Update Documents")
-		collection.find(:name => seattle.name).update_one("$set" => {:countryCode => 999})
-		outPut.push("Updated #{seattle.name} with countryCode 999")
-
-		outPut.push("")
-		outPut.push("Delete Documents")
-		result = collection.find(:name => tokyo.name).delete_many
-		unless result != 1
-			outPut.push("Failed to delete only document with #{tokyo.name}")
-		end
-=begin 
-		collection_names returns The regular expression /system\.|\$/ is not supported. 
-		This was tested with Linux 64 server and Windows 64 client
-			outPut.push("")
-			outPut.push("Get a list of all of the collections")
-			result = db.collection_names
-			outPut.push(result)
-=end
-
-		outPut.push("")
-		outPut.push("SQL passthrough")
-		# You must enable SQL operations by setting security.sql.passthrough=true in the wire listener properties file.
-		# remove table if already exist
-		sqlTable = mongo_client["town"].drop
-		# the table needs to be created through database, not mongo client for passthrough
-		sqlCollection = db["system.sql"]
-		outPut.push("Create table")
-		result = sqlCollection.find("$sql" => "create table town (name varchar(255), countryCode int)")
-		outPut.push("Insert into table")
-		result = sqlCollection.find("$sql" => "insert into town values ('Lawerence', 1)")
-		outPut.push("Drop table")
-		result = sqlCollection.find("$sql" => "drop table town")
-
-		#Transactions
-		outPut.push("Transactions")
-		db.command(:transaction => "enable")
-		collection.insert_one(sydney.toHash)
-		db.command(:transaction => "commit")
-		collection.insert_one(tokyo.toHash)
-		collection.insert_one(melbourne.toHash)
-		db.command(:transaction => "rollback")
-		db.command(:transaction => "disable")
-
-		outPut.push(" ")
-		outPut.push("List of all documents in collection")
-		result = collection.find.projection(:name =>1, :population => 1, :_id => 0).each do |row|
-			outPut.push(row)
-		end
-
-		outPut.push("")
-		outPut.push("Commands")
-		count = db.command({"count" => "#{collectionName}"})
-		count.each do |stmt|
-			outPut.push("There are #{stmt['n']} documents in collection}")
-		end
-		
-		rst = db.command({"distinct" => "#{collectionName}", "key" => "countryCode"})
-		rst.each do |stmt|
-			outPut.push("Distinct values: #{stmt['values']}")
-		end
-		# Database stats
-		rst = db.command({"dbstats" => 1})
-		#outPut.push[0]
-		rst.each do |stmt|
-			outPut.push(stmt)
-		end
-		# collection stats
-		rst = db.command({"collstats" => "#{collectionName}"})
-		rst.each do |stmt|
-			outPut.push(stmt)
-		end
-		outPut.push("")
-		outPut.push("Drop a collection")
-		collection.drop
-		outPut.push("Drop database")
-		db.drop
-		
-
-		return outPut
 	end
 end
 
